@@ -68,9 +68,7 @@ void bandwidth_interferer(float* __restrict__ buffer,
                           unsigned long long duration_ns)
 {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-
     const unsigned long long start = global_timer_ns();
-
     float x = 0.5f;
 
     while (global_timer_ns() - start < duration_ns) {
@@ -96,7 +94,6 @@ double median(std::vector<double> values)
         return 0.0;
 
     std::sort(values.begin(), values.end());
-
     const size_t n = values.size();
 
     if (n % 2 == 0)
@@ -148,10 +145,9 @@ float run_victim_sample(
         iterations);
 
     CUDA_CHECK(cudaGetLastError());
-
     CUDA_CHECK(cudaEventRecord(stop_event, stream));
 
-    // Synchronize outside the measured CUDA-event interval.
+    // Host synchronization occurs after the measured event interval.
     CUDA_CHECK(cudaEventSynchronize(stop_event));
 
     float elapsed_ms = 0.0f;
@@ -170,17 +166,9 @@ float run_victim_sample(
 
 int main(int argc, char** argv)
 {
-    // --------------------------------------------------------
-    // Configuration
-    // --------------------------------------------------------
-
     constexpr int WARMUP_SAMPLES = 30;
     constexpr int BASELINE_SAMPLES = 100;
-
-    // We target this many observations during interference,
-    // but never continue collecting after the completion event.
     constexpr int INTERFERENCE_TARGET_SAMPLES = 100;
-
     constexpr int RECOVERY_SAMPLES = 100;
     constexpr int THREADS = 256;
 
@@ -194,9 +182,7 @@ int main(int argc, char** argv)
     constexpr int INTERFERER_BLOCKS = 8;
 
     double interference_ms = 50.0;
-
-    std::string output_file =
-        "results/experiment0_50ms.csv";
+    std::string output_file = "results/experiment0_50ms.csv";
 
     if (argc >= 2)
         interference_ms = std::stod(argv[1]);
@@ -254,10 +240,6 @@ int main(int argc, char** argv)
         &interferer_buffer,
         INTERFERER_ELEMENTS * sizeof(float)));
 
-    // --------------------------------------------------------
-    // Initialize buffers
-    // --------------------------------------------------------
-
     CUDA_CHECK(cudaMemset(
         victim_input,
         1,
@@ -276,7 +258,7 @@ int main(int argc, char** argv)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // --------------------------------------------------------
-    // Create streams
+    // Streams
     // --------------------------------------------------------
 
     cudaStream_t victim_stream;
@@ -309,7 +291,7 @@ int main(int argc, char** argv)
             (VICTIM_ELEMENTS + THREADS - 1) / THREADS);
 
     // --------------------------------------------------------
-    // Warm-up
+    // Warm-up and settle
     // --------------------------------------------------------
 
     std::cout << "Warming up GPU...\n";
@@ -326,21 +308,14 @@ int main(int argc, char** argv)
             victim_stop_event);
     }
 
-    // --------------------------------------------------------
-    // Settle
-    // --------------------------------------------------------
-
     std::cout << "Settling GPU...\n";
 
     CUDA_CHECK(cudaDeviceSynchronize());
-
-    std::this_thread::sleep_for(
-        std::chrono::milliseconds(500));
-
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // --------------------------------------------------------
-    // Result storage
+    // Result storage and CSV
     // --------------------------------------------------------
 
     std::vector<double> baseline;
@@ -351,25 +326,18 @@ int main(int argc, char** argv)
     interference.reserve(INTERFERENCE_TARGET_SAMPLES);
     recovery.reserve(RECOVERY_SAMPLES);
 
-    // --------------------------------------------------------
-    // CSV
-    // --------------------------------------------------------
-    // recovery_index is -1 outside recovery and starts at 0 for
-    // the FIRST victim invocation after interference_end_event.
-    // The row's sample index remains globally ordered.
-    // --------------------------------------------------------
-
     std::ofstream csv(output_file);
 
     if (!csv.is_open()) {
-        std::cerr
-            << "ERROR: Could not open "
-            << output_file
-            << "\n";
+        std::cerr << "ERROR: Could not open " << output_file << "\n";
         return EXIT_FAILURE;
     }
 
-    csv << "sample,phase,victim_latency_ms,recovery_index\n";
+    // time_since_interference_end_ms is measured on the GPU using
+    // CUDA event timestamps. For recovery_index=0 it is the GPU
+    // elapsed time from interference_end_event to the first victim
+    // start event. Later rows use the same fixed end boundary.
+    csv << "sample,phase,victim_latency_ms,recovery_index,time_since_interference_end_ms\n";
 
     // --------------------------------------------------------
     // BASELINE
@@ -397,7 +365,7 @@ int main(int argc, char** argv)
             << ",baseline,"
             << std::setprecision(9)
             << latency
-            << ",-1\n";
+            << ",-1,-1\n";
     }
 
     // --------------------------------------------------------
@@ -413,7 +381,7 @@ int main(int argc, char** argv)
         << interference_ms
         << " ms DRAM INTERFERENCE\n";
 
-    // This marker is queued immediately before the interferer.
+    // The end event is the exact GPU-side recovery boundary.
     CUDA_CHECK(cudaEventRecord(
         interference_start_event,
         interferer_stream));
@@ -430,8 +398,6 @@ int main(int argc, char** argv)
 
     CUDA_CHECK(cudaGetLastError());
 
-    // Queued immediately after the interferer kernel.
-    // Completion of this event is the recovery boundary.
     CUDA_CHECK(cudaEventRecord(
         interference_end_event,
         interferer_stream));
@@ -454,8 +420,6 @@ int main(int argc, char** argv)
          i < INTERFERENCE_TARGET_SAMPLES;
          ++i)
     {
-        // Do not launch another victim after the GPU-side
-        // completion marker has already passed.
         cudaError_t status =
             cudaEventQuery(interference_end_event);
 
@@ -482,10 +446,10 @@ int main(int argc, char** argv)
             << ",interference,"
             << std::setprecision(9)
             << latency
-            << ",-1\n";
+            << ",-1,-1\n";
     }
 
-    // Establish the exact end boundary before recovery sample 0.
+    // Do not begin recovery until the GPU-side end marker has completed.
     CUDA_CHECK(cudaEventSynchronize(interference_end_event));
 
     std::cout
@@ -500,7 +464,6 @@ int main(int argc, char** argv)
                "interferer was active. Try a longer interference duration.\n";
 
         csv.close();
-
         CUDA_CHECK(cudaEventDestroy(victim_start_event));
         CUDA_CHECK(cudaEventDestroy(victim_stop_event));
         CUDA_CHECK(cudaEventDestroy(interference_start_event));
@@ -534,6 +497,14 @@ int main(int argc, char** argv)
             victim_start_event,
             victim_stop_event);
 
+        // CUDA event timestamps are in GPU time and avoid host-side
+        // scheduler delay being interpreted as recovery time.
+        float elapsed_since_end_ms = 0.0f;
+        CUDA_CHECK(cudaEventElapsedTime(
+            &elapsed_since_end_ms,
+            interference_end_event,
+            victim_start_event));
+
         recovery.push_back(latency);
 
         csv << BASELINE_SAMPLES +
@@ -544,6 +515,8 @@ int main(int argc, char** argv)
             << latency
             << ","
             << i
+            << ","
+            << elapsed_since_end_ms
             << "\n";
     }
 
