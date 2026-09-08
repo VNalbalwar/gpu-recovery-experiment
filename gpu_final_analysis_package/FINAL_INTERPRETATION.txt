@@ -1,0 +1,25 @@
+GPU Recovery Project — Unified Final Analysis
+
+1. DURING INTERFERENCE
+Compute and L2 produce strong victim slowdowns. Memory's run median is near/below 1x, but its P95/P99 tails are elevated, so median alone understates its interference effect.
+
+2. AFTER INTERFERENCE
+Across the duration experiments, recovery run medians remain approximately 1.0x baseline for Memory, L2, and Compute. Recovery P95/P99 are generally only ~1.03–1.06x baseline. There is no clear increase in recovery penalty with longer interference duration.
+
+3. EXTENDED L2
+10 control trials and 10 L2-interference trials were analyzed at the trial level.
+Control vs L2:
+- median: 0.9865 vs 1.0000
+- P95: 1.0905 vs 1.3192
+- P99: 1.2174 vs 1.5523
+- median fraction >1.2x: 1.5% vs 11.5%
+The uncorrected tests show tail signals, but Holm-adjusted p-values are not statistically significant.
+
+4. TEMPORAL L2
+The ~2 ms extended window shows no reproducible monotonic decay. Median latency is essentially at baseline across bins; P95 fluctuates and remains elevated in some bins. This should be described as binned tail variability, not a continuous recovery curve.
+
+5. FINAL SCIENTIFIC CLAIM
+The experiments establish strong active interference but do not establish a reproducible persistent post-interference slowdown. L2 shows suggestive increased tail variability after interference, but the effect is heterogeneous and not statistically conclusive after multiple-comparison correction.
+
+STATISTICAL UNIT
+Trial-level inference is used for condition comparisons to avoid treating hundreds/thousands of recovery probes from the same trial as independent experiments.
