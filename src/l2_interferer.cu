@@ -82,11 +82,11 @@ int main(int argc, char **argv)
     const int blocks =
         (argc >= 3) ? std::stoi(argv[2]) : 24;
 
-    // 256 MiB working set.
+    // 16 MiB working set.
     // Large enough to exceed L1 substantially while remaining
     // within the GPU's L2/cache hierarchy working range.
     constexpr size_t ELEMENTS =
-        256ULL * 1024ULL * 1024ULL / sizeof(float);
+        16ULL * 1024ULL * 1024ULL / sizeof(float);
 
     const unsigned long long duration_ns =
         static_cast<unsigned long long>(

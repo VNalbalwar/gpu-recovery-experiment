@@ -49,7 +49,7 @@ __global__ void victim_kernel(const float *__restrict__ input,
 }
 
 // ============================================================
-// DRAM bandwidth interferer
+// L2-focused interferer
 // ============================================================
 
 __device__ __forceinline__ unsigned long long global_timer_ns()
@@ -63,25 +63,44 @@ __device__ __forceinline__ unsigned long long global_timer_ns()
     return t;
 }
 
-__global__ void bandwidth_interferer(float *__restrict__ buffer,
-                                     size_t n,
-                                     unsigned long long duration_ns)
+__global__ void l2_interferer(float *__restrict__ buffer,
+                              size_t elements,
+                              unsigned long long duration_ns)
 {
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const size_t tid =
+        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+    float x = 1.0f;
+
     const unsigned long long start = global_timer_ns();
-    float x = 0.5f;
 
     while (global_timer_ns() - start < duration_ns)
     {
-        size_t pos = (idx * 4096ULL) % n;
+        size_t index = (tid * 32ULL) % elements;
 
-        x += buffer[pos];
-        buffer[pos] = x;
+#pragma unroll
+        for (int i = 0; i < 16; ++i)
+        {
+            float value;
 
-        idx += gridDim.x * blockDim.x;
+            asm volatile(
+                "ld.global.cg.f32 %0, [%1];"
+                : "=f"(value)
+                : "l"(&buffer[index]));
 
-        if (idx >= n)
-            idx %= n;
+            x += value;
+            x = x * 1.000001f + 0.000001f;
+
+            asm volatile(
+                "st.global.cg.f32 [%0], %1;"
+                :
+                : "l"(&buffer[index]), "f"(x));
+
+            index += 32ULL;
+
+            if (index >= elements)
+                index -= elements;
+        }
     }
 }
 
@@ -173,7 +192,7 @@ int main(int argc, char **argv)
     constexpr int THREADS = 256;
 
     constexpr size_t DEFAULT_VICTIM_MIB = 64;
-    constexpr size_t INTERFERER_ELEMENTS =
+    constexpr size_t L2_INTERFERER_ELEMENTS =
         256ULL * 1024ULL * 1024ULL; // 1 GiB
 
     constexpr int VICTIM_ITERATIONS = 4;
@@ -229,7 +248,7 @@ int main(int argc, char **argv)
 
     std::cout
         << "\n============================================\n"
-        << " Experiment 0: Transient DRAM Interference\n"
+        << " Experiment L2: Transient L2 Interference\n"
         << "============================================\n\n"
         << "GPU:              " << prop.name << "\n"
         << "SM count:         " << prop.multiProcessorCount << "\n"
@@ -264,7 +283,7 @@ int main(int argc, char **argv)
 
     CUDA_CHECK(cudaMalloc(
         &interferer_buffer,
-        INTERFERER_ELEMENTS * sizeof(float)));
+        L2_INTERFERER_ELEMENTS * sizeof(float)));
 
     CUDA_CHECK(cudaMemset(
         victim_input,
@@ -279,7 +298,7 @@ int main(int argc, char **argv)
     CUDA_CHECK(cudaMemset(
         interferer_buffer,
         1,
-        INTERFERER_ELEMENTS * sizeof(float)));
+        L2_INTERFERER_ELEMENTS * sizeof(float)));
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -404,19 +423,19 @@ int main(int argc, char **argv)
     std::cout
         << "\n>>> STARTING "
         << interference_ms
-        << " ms DRAM INTERFERENCE\n";
+        << " ms L2 INTERFERENCE\n";
 
     CUDA_CHECK(cudaEventRecord(
         interference_start_event,
         interferer_stream));
 
-    bandwidth_interferer<<<
+    l2_interferer<<<
         interferer_blocks,
         THREADS,
         0,
         interferer_stream>>>(
         interferer_buffer,
-        INTERFERER_ELEMENTS,
+        L2_INTERFERER_ELEMENTS,
         duration_ns);
 
     CUDA_CHECK(cudaGetLastError());
