@@ -504,6 +504,13 @@ int main(int argc, char **argv)
     // RECOVERY
     // --------------------------------------------------------
 
+    CUDA_CHECK(cudaEventSynchronize(interference_end_event));
+
+    CUDA_CHECK(cudaStreamWaitEvent(
+        victim_stream,
+        interference_end_event,
+        0));
+
     std::cout
         << "\n--------------------------------------------\n"
         << " Phase 3: RECOVERY\n"
