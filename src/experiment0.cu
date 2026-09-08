@@ -10,25 +10,26 @@
 #include <thread>
 #include <vector>
 
-#define CUDA_CHECK(call)                                                     \
-    do {                                                                     \
-        cudaError_t err = (call);                                            \
-        if (err != cudaSuccess) {                                            \
-            std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__    \
-                      << " -> " << cudaGetErrorString(err) << "\n";          \
-            std::exit(EXIT_FAILURE);                                         \
-        }                                                                    \
+#define CUDA_CHECK(call)                                                 \
+    do                                                                   \
+    {                                                                    \
+        cudaError_t err = (call);                                        \
+        if (err != cudaSuccess)                                          \
+        {                                                                \
+            std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__ \
+                      << " -> " << cudaGetErrorString(err) << "\n";      \
+            std::exit(EXIT_FAILURE);                                     \
+        }                                                                \
     } while (0)
 
 // ============================================================
 // Victim kernel
 // ============================================================
 
-__global__
-void victim_kernel(const float* __restrict__ input,
-                   float* __restrict__ output,
-                   size_t n,
-                   int iterations)
+__global__ void victim_kernel(const float *__restrict__ input,
+                              float *__restrict__ output,
+                              size_t n,
+                              int iterations)
 {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -37,8 +38,9 @@ void victim_kernel(const float* __restrict__ input,
 
     float x = input[idx];
 
-    #pragma unroll 1
-    for (int i = 0; i < iterations; ++i) {
+#pragma unroll 1
+    for (int i = 0; i < iterations; ++i)
+    {
         x = x * 1.000001f + 0.000001f;
         x = x * 0.999999f + 0.000002f;
     }
@@ -50,8 +52,7 @@ void victim_kernel(const float* __restrict__ input,
 // DRAM bandwidth interferer
 // ============================================================
 
-__device__ __forceinline__
-unsigned long long global_timer_ns()
+__device__ __forceinline__ unsigned long long global_timer_ns()
 {
     unsigned long long t;
 
@@ -62,16 +63,16 @@ unsigned long long global_timer_ns()
     return t;
 }
 
-__global__
-void bandwidth_interferer(float* __restrict__ buffer,
-                          size_t n,
-                          unsigned long long duration_ns)
+__global__ void bandwidth_interferer(float *__restrict__ buffer,
+                                     size_t n,
+                                     unsigned long long duration_ns)
 {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     const unsigned long long start = global_timer_ns();
     float x = 0.5f;
 
-    while (global_timer_ns() - start < duration_ns) {
+    while (global_timer_ns() - start < duration_ns)
+    {
         size_t pos = (idx * 4096ULL) % n;
 
         x += buffer[pos];
@@ -127,8 +128,8 @@ double percentile(std::vector<double> values, double p)
 // ============================================================
 
 float run_victim_sample(
-    const float* input,
-    float* output,
+    const float *input,
+    float *output,
     size_t n,
     int iterations,
     int blocks,
@@ -163,7 +164,7 @@ float run_victim_sample(
 // Main
 // ============================================================
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
     constexpr int WARMUP_SAMPLES = 30;
     constexpr int BASELINE_SAMPLES = 100;
@@ -192,19 +193,22 @@ int main(int argc, char** argv)
         victim_mib = std::stoull(argv[3]);
 
     if (argc >= 5)
-    interferer_blocks = std::stoi(argv[4]);
-    
-    if (interferer_blocks <= 0 || interferer_blocks > 32) {
+        interferer_blocks = std::stoi(argv[4]);
+
+    if (interferer_blocks <= 0 || interferer_blocks > 32)
+    {
         std::cerr
             << "ERROR: interferer blocks must be between 1 and 32.\n";
         return EXIT_FAILURE;
     }
-    if (interference_ms <= 0.0) {
+    if (interference_ms <= 0.0)
+    {
         std::cerr << "ERROR: interference duration must be > 0 ms.\n";
         return EXIT_FAILURE;
     }
 
-    if (victim_mib == 0 || victim_mib > 2048 || victim_mib % 4 != 0) {
+    if (victim_mib == 0 || victim_mib > 2048 || victim_mib % 4 != 0)
+    {
         std::cerr
             << "ERROR: victim memory must be a non-zero multiple of 4 MiB "
                "and no larger than 2048 MiB.\n";
@@ -246,9 +250,9 @@ int main(int argc, char** argv)
 
     std::cout << "Allocating GPU memory...\n";
 
-    float* victim_input = nullptr;
-    float* victim_output = nullptr;
-    float* interferer_buffer = nullptr;
+    float *victim_input = nullptr;
+    float *victim_output = nullptr;
+    float *interferer_buffer = nullptr;
 
     CUDA_CHECK(cudaMalloc(
         &victim_input,
@@ -260,7 +264,7 @@ int main(int argc, char** argv)
 
     CUDA_CHECK(cudaMalloc(
         &interferer_buffer,
-        interferer_blocks * THREADS * sizeof(float)));
+        INTERFERER_ELEMENTS * sizeof(float)));
 
     CUDA_CHECK(cudaMemset(
         victim_input,
@@ -275,7 +279,7 @@ int main(int argc, char** argv)
     CUDA_CHECK(cudaMemset(
         interferer_buffer,
         1,
-        interferer_blocks * THREADS * sizeof(float)));
+        INTERFERER_ELEMENTS * sizeof(float)));
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -318,7 +322,8 @@ int main(int argc, char** argv)
 
     std::cout << "Warming up GPU...\n";
 
-    for (int i = 0; i < WARMUP_SAMPLES; ++i) {
+    for (int i = 0; i < WARMUP_SAMPLES; ++i)
+    {
         run_victim_sample(
             victim_input,
             victim_output,
@@ -350,7 +355,8 @@ int main(int argc, char** argv)
 
     std::ofstream csv(output_file);
 
-    if (!csv.is_open()) {
+    if (!csv.is_open())
+    {
         std::cerr << "ERROR: Could not open " << output_file << "\n";
         return EXIT_FAILURE;
     }
@@ -366,7 +372,8 @@ int main(int argc, char** argv)
         << " Phase 1: BASELINE\n"
         << "--------------------------------------------\n";
 
-    for (int i = 0; i < BASELINE_SAMPLES; ++i) {
+    for (int i = 0; i < BASELINE_SAMPLES; ++i)
+    {
         const float latency = run_victim_sample(
             victim_input,
             victim_output,
@@ -407,8 +414,7 @@ int main(int argc, char** argv)
         interferer_blocks,
         THREADS,
         0,
-        interferer_stream
-    >>>(
+        interferer_stream>>>(
         interferer_buffer,
         INTERFERER_ELEMENTS,
         duration_ns);
@@ -474,7 +480,8 @@ int main(int argc, char** argv)
         << "\n"
         << ">>> INTERFERENCE FINISHED\n";
 
-    if (interference.empty()) {
+    if (interference.empty())
+    {
         std::cerr
             << "ERROR: No victim samples were collected while the "
                "interferer was active. Try a longer interference duration.\n";
@@ -502,7 +509,8 @@ int main(int argc, char** argv)
         << " Phase 3: RECOVERY\n"
         << "--------------------------------------------\n";
 
-    for (int i = 0; i < RECOVERY_SAMPLES; ++i) {
+    for (int i = 0; i < RECOVERY_SAMPLES; ++i)
+    {
         const float latency = run_victim_sample(
             victim_input,
             victim_output,
@@ -522,8 +530,8 @@ int main(int argc, char** argv)
         recovery.push_back(latency);
 
         csv << BASELINE_SAMPLES +
-               interference_sample_count +
-               i
+                   interference_sample_count +
+                   i
             << ",recovery,"
             << std::setprecision(9)
             << latency
@@ -552,7 +560,8 @@ int main(int argc, char** argv)
         << "Interference median:  " << interference_median << " ms\n"
         << "Recovery median:      " << recovery_median << " ms\n";
 
-    if (baseline_median > 0.0) {
+    if (baseline_median > 0.0)
+    {
         std::cout
             << "Interference slowdown: "
             << interference_median / baseline_median
