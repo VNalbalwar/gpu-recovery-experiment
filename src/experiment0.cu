@@ -147,7 +147,6 @@ float run_victim_sample(
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaEventRecord(stop_event, stream));
 
-    // Host synchronization occurs after the measured event interval.
     CUDA_CHECK(cudaEventSynchronize(stop_event));
 
     float elapsed_ms = 0.0f;
@@ -172,9 +171,7 @@ int main(int argc, char** argv)
     constexpr int RECOVERY_SAMPLES = 100;
     constexpr int THREADS = 256;
 
-    constexpr size_t VICTIM_ELEMENTS =
-        16ULL * 1024ULL * 1024ULL; // 64 MiB
-
+    constexpr size_t DEFAULT_VICTIM_MIB = 64;
     constexpr size_t INTERFERER_ELEMENTS =
         256ULL * 1024ULL * 1024ULL; // 1 GiB
 
@@ -183,6 +180,7 @@ int main(int argc, char** argv)
 
     double interference_ms = 50.0;
     std::string output_file = "results/experiment0_50ms.csv";
+    size_t victim_mib = DEFAULT_VICTIM_MIB;
 
     if (argc >= 2)
         interference_ms = std::stod(argv[1]);
@@ -190,10 +188,23 @@ int main(int argc, char** argv)
     if (argc >= 3)
         output_file = argv[2];
 
+    if (argc >= 4)
+        victim_mib = std::stoull(argv[3]);
+
     if (interference_ms <= 0.0) {
         std::cerr << "ERROR: interference duration must be > 0 ms.\n";
         return EXIT_FAILURE;
     }
+
+    if (victim_mib == 0 || victim_mib > 2048 || victim_mib % 4 != 0) {
+        std::cerr
+            << "ERROR: victim memory must be a non-zero multiple of 4 MiB "
+               "and no larger than 2048 MiB.\n";
+        return EXIT_FAILURE;
+    }
+
+    const size_t victim_elements =
+        victim_mib * 1024ULL * 1024ULL / sizeof(float);
 
     // --------------------------------------------------------
     // GPU setup
@@ -213,6 +224,9 @@ int main(int argc, char** argv)
         << "Global memory:    " << std::fixed << std::setprecision(2)
         << prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0)
         << " GiB\n"
+        << "Victim memory:    " << victim_mib << " MiB\n"
+        << "Victim buffers:   " << (2.0 * victim_mib / 1024.0)
+        << " GiB total\n"
         << "Interference:     " << interference_ms << " ms\n"
         << "Interferer grid:  " << INTERFERER_BLOCKS
         << " blocks x " << THREADS << " threads\n"
@@ -230,11 +244,11 @@ int main(int argc, char** argv)
 
     CUDA_CHECK(cudaMalloc(
         &victim_input,
-        VICTIM_ELEMENTS * sizeof(float)));
+        victim_elements * sizeof(float)));
 
     CUDA_CHECK(cudaMalloc(
         &victim_output,
-        VICTIM_ELEMENTS * sizeof(float)));
+        victim_elements * sizeof(float)));
 
     CUDA_CHECK(cudaMalloc(
         &interferer_buffer,
@@ -243,12 +257,12 @@ int main(int argc, char** argv)
     CUDA_CHECK(cudaMemset(
         victim_input,
         1,
-        VICTIM_ELEMENTS * sizeof(float)));
+        victim_elements * sizeof(float)));
 
     CUDA_CHECK(cudaMemset(
         victim_output,
         0,
-        VICTIM_ELEMENTS * sizeof(float)));
+        victim_elements * sizeof(float)));
 
     CUDA_CHECK(cudaMemset(
         interferer_buffer,
@@ -288,7 +302,7 @@ int main(int argc, char** argv)
 
     const int victim_blocks =
         static_cast<int>(
-            (VICTIM_ELEMENTS + THREADS - 1) / THREADS);
+            (victim_elements + THREADS - 1) / THREADS);
 
     // --------------------------------------------------------
     // Warm-up and settle
@@ -300,7 +314,7 @@ int main(int argc, char** argv)
         run_victim_sample(
             victim_input,
             victim_output,
-            VICTIM_ELEMENTS,
+            victim_elements,
             VICTIM_ITERATIONS,
             victim_blocks,
             victim_stream,
@@ -333,10 +347,6 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    // time_since_interference_end_ms is measured on the GPU using
-    // CUDA event timestamps. For recovery_index=0 it is the GPU
-    // elapsed time from interference_end_event to the first victim
-    // start event. Later rows use the same fixed end boundary.
     csv << "sample,phase,victim_latency_ms,recovery_index,time_since_interference_end_ms\n";
 
     // --------------------------------------------------------
@@ -352,7 +362,7 @@ int main(int argc, char** argv)
         const float latency = run_victim_sample(
             victim_input,
             victim_output,
-            VICTIM_ELEMENTS,
+            victim_elements,
             VICTIM_ITERATIONS,
             victim_blocks,
             victim_stream,
@@ -381,7 +391,6 @@ int main(int argc, char** argv)
         << interference_ms
         << " ms DRAM INTERFERENCE\n";
 
-    // The end event is the exact GPU-side recovery boundary.
     CUDA_CHECK(cudaEventRecord(
         interference_start_event,
         interferer_stream));
@@ -432,7 +441,7 @@ int main(int argc, char** argv)
         const float latency = run_victim_sample(
             victim_input,
             victim_output,
-            VICTIM_ELEMENTS,
+            victim_elements,
             VICTIM_ITERATIONS,
             victim_blocks,
             victim_stream,
@@ -449,7 +458,6 @@ int main(int argc, char** argv)
             << ",-1,-1\n";
     }
 
-    // Do not begin recovery until the GPU-side end marker has completed.
     CUDA_CHECK(cudaEventSynchronize(interference_end_event));
 
     std::cout
@@ -490,15 +498,13 @@ int main(int argc, char** argv)
         const float latency = run_victim_sample(
             victim_input,
             victim_output,
-            VICTIM_ELEMENTS,
+            victim_elements,
             VICTIM_ITERATIONS,
             victim_blocks,
             victim_stream,
             victim_start_event,
             victim_stop_event);
 
-        // CUDA event timestamps are in GPU time and avoid host-side
-        // scheduler delay being interpreted as recovery time.
         float elapsed_since_end_ms = 0.0f;
         CUDA_CHECK(cudaEventElapsedTime(
             &elapsed_since_end_ms,
