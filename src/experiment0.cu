@@ -176,7 +176,7 @@ int main(int argc, char** argv)
         256ULL * 1024ULL * 1024ULL; // 1 GiB
 
     constexpr int VICTIM_ITERATIONS = 4;
-    constexpr int INTERFERER_BLOCKS = 8;
+    int interferer_blocks = 8;
 
     double interference_ms = 50.0;
     std::string output_file = "results/experiment0_50ms.csv";
@@ -191,6 +191,14 @@ int main(int argc, char** argv)
     if (argc >= 4)
         victim_mib = std::stoull(argv[3]);
 
+    if (argc >= 5)
+    interferer_blocks = std::stoi(argv[4]);
+    
+    if (interferer_blocks <= 0 || interferer_blocks > 32) {
+        std::cerr
+            << "ERROR: interferer blocks must be between 1 and 32.\n";
+        return EXIT_FAILURE;
+    }
     if (interference_ms <= 0.0) {
         std::cerr << "ERROR: interference duration must be > 0 ms.\n";
         return EXIT_FAILURE;
@@ -228,7 +236,7 @@ int main(int argc, char** argv)
         << "Victim buffers:   " << (2.0 * victim_mib / 1024.0)
         << " GiB total\n"
         << "Interference:     " << interference_ms << " ms\n"
-        << "Interferer grid:  " << INTERFERER_BLOCKS
+        << "Interferer grid:  " << interferer_blocks
         << " blocks x " << THREADS << " threads\n"
         << "Output:           " << output_file << "\n\n";
 
@@ -252,7 +260,7 @@ int main(int argc, char** argv)
 
     CUDA_CHECK(cudaMalloc(
         &interferer_buffer,
-        INTERFERER_ELEMENTS * sizeof(float)));
+        interferer_blocks * THREADS * sizeof(float)));
 
     CUDA_CHECK(cudaMemset(
         victim_input,
@@ -267,7 +275,7 @@ int main(int argc, char** argv)
     CUDA_CHECK(cudaMemset(
         interferer_buffer,
         1,
-        INTERFERER_ELEMENTS * sizeof(float)));
+        interferer_blocks * THREADS * sizeof(float)));
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -396,7 +404,7 @@ int main(int argc, char** argv)
         interferer_stream));
 
     bandwidth_interferer<<<
-        INTERFERER_BLOCKS,
+        interferer_blocks,
         THREADS,
         0,
         interferer_stream
