@@ -8,16 +8,16 @@
 #include <string>
 #include <vector>
 
-#define CUDA_CHECK(call)                                                   \
-    do                                                                     \
-    {                                                                      \
-        cudaError_t err = (call);                                          \
-        if (err != cudaSuccess)                                            \
-        {                                                                  \
-            std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__   \
-                      << " -> " << cudaGetErrorString(err) << "\n";        \
-            std::exit(EXIT_FAILURE);                                       \
-        }                                                                  \
+#define CUDA_CHECK(call)                                                 \
+    do                                                                   \
+    {                                                                    \
+        cudaError_t err = (call);                                        \
+        if (err != cudaSuccess)                                          \
+        {                                                                \
+            std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__ \
+                      << " -> " << cudaGetErrorString(err) << "\n";      \
+            std::exit(EXIT_FAILURE);                                     \
+        }                                                                \
     } while (0)
 
 // ============================================================
@@ -36,7 +36,6 @@ constexpr int VICTIM_ITERATIONS = 4;
 // Number of repeated operations used to make the probe longer.
 // We will calibrate this experimentally.
 constexpr int DEFAULT_WORK_REPETITIONS = 32;
-
 
 // ============================================================
 // Victim kernel
@@ -206,10 +205,10 @@ int main(int argc, char **argv)
     if (argc >= 5)
         interferer_blocks = std::stoi(argv[4]);
 
-    if (interference_ms <= 0.0)
+    if (interference_ms < 0.0)
     {
         std::cerr
-            << "ERROR: interference duration must be > 0 ms.\n";
+            << "ERROR: interference duration must be >= 0 ms.\n";
         return EXIT_FAILURE;
     }
 
@@ -222,12 +221,20 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (interferer_blocks <= 0 ||
+    if (interferer_blocks < 0 ||
         interferer_blocks > 32)
     {
         std::cerr
             << "ERROR: interferer blocks must be between "
-               "1 and 32.\n";
+               "0 and 32.\n";
+        return EXIT_FAILURE;
+    }
+
+    if ((interference_ms == 0.0) != (interferer_blocks == 0))
+    {
+        std::cerr
+            << "ERROR: control mode requires both "
+               "interference_ms=0 and interferer_blocks=0.\n";
         return EXIT_FAILURE;
     }
 
@@ -368,9 +375,9 @@ int main(int argc, char **argv)
             THREADS,
             0,
             victim_stream>>>(
-                victim_input,
-                victim_output,
-                work_repetitions);
+            victim_input,
+            victim_output,
+            work_repetitions);
 
         CUDA_CHECK(cudaGetLastError());
 
@@ -423,9 +430,9 @@ int main(int argc, char **argv)
             THREADS,
             0,
             victim_stream>>>(
-                victim_input,
-                victim_output,
-                work_repetitions);
+            victim_input,
+            victim_output,
+            work_repetitions);
 
         CUDA_CHECK(cudaGetLastError());
 
@@ -493,30 +500,53 @@ int main(int argc, char **argv)
     // No host synchronization happens here.
     // --------------------------------------------------------
 
-    std::cout
-        << "\n>>> QUEUING "
-        << interference_ms
-        << " ms L2 INTERFERENCE\n";
+    if (interference_ms > 0.0)
+    {
+        std::cout
+            << "\n>>> QUEUING "
+            << interference_ms
+            << " ms L2 INTERFERENCE\n";
+    }
+    else
+    {
+        std::cout
+            << "\n>>> RUNNING NO-INTERFERENCE CONTROL\n";
+    }
 
-    CUDA_CHECK(cudaEventRecord(
-        interference_start_event,
-        interferer_stream));
+    if (interference_ms > 0.0)
+    {
+        CUDA_CHECK(cudaEventRecord(
+            interference_start_event,
+            interferer_stream));
 
-    l2_interferer<<<
-        interferer_blocks,
-        THREADS,
-        0,
-        interferer_stream>>>(
-        interferer_buffer,
-        L2_INTERFERER_ELEMENTS,
-        duration_ns);
+        l2_interferer<<<
+            interferer_blocks,
+            THREADS,
+            0,
+            interferer_stream>>>(
+            interferer_buffer,
+            L2_INTERFERER_ELEMENTS,
+            duration_ns);
 
-    CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaGetLastError());
 
-    CUDA_CHECK(cudaEventRecord(
-        interference_end_event,
-        interferer_stream));
+        CUDA_CHECK(cudaEventRecord(
+            interference_end_event,
+            interferer_stream));
+    }
+    else
+    {
+        // No-interference control:
+        // Record start and end back-to-back so that
+        // the same event-timing logic remains valid.
+        CUDA_CHECK(cudaEventRecord(
+            interference_start_event,
+            interferer_stream));
 
+        CUDA_CHECK(cudaEventRecord(
+            interference_end_event,
+            interferer_stream));
+    }
     // --------------------------------------------------------
     // GPU-side dependency:
     //
@@ -577,9 +607,9 @@ int main(int argc, char **argv)
             THREADS,
             0,
             recovery_stream>>>(
-                victim_input,
-                victim_output,
-                work_repetitions);
+            victim_input,
+            victim_output,
+            work_repetitions);
 
         CUDA_CHECK(cudaGetLastError());
 
