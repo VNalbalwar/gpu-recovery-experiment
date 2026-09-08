@@ -192,8 +192,9 @@ int main(int argc, char **argv)
     constexpr int THREADS = 256;
 
     constexpr size_t DEFAULT_VICTIM_MIB = 64;
+    // 16 MiB working set, designed to remain cache-resident.
     constexpr size_t L2_INTERFERER_ELEMENTS =
-        256ULL * 1024ULL * 1024ULL; // 1 GiB
+        16ULL * 1024ULL * 1024ULL / sizeof(float);
 
     constexpr int VICTIM_ITERATIONS = 4;
     int interferer_blocks = 8;
