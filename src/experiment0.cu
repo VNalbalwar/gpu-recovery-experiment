@@ -49,11 +49,6 @@ void victim_kernel(const float* __restrict__ input,
 // ============================================================
 // DRAM bandwidth interferer
 // ============================================================
-// Runs for duration_ns according to the GPU global timer.
-//
-// IMPORTANT: the host uses a separate CUDA event recorded after
-// this kernel to establish the exact GPU-side end boundary.
-// ============================================================
 
 __device__ __forceinline__
 unsigned long long global_timer_ns()
@@ -133,9 +128,6 @@ double percentile(std::vector<double> values, double p)
 // ============================================================
 // Measure one victim invocation
 // ============================================================
-// CUDA events measure only the victim kernel interval.
-// Host synchronization happens after the stop event.
-// ============================================================
 
 float run_victim_sample(
     const float* input,
@@ -159,6 +151,7 @@ float run_victim_sample(
 
     CUDA_CHECK(cudaEventRecord(stop_event, stream));
 
+    // Synchronize outside the measured CUDA-event interval.
     CUDA_CHECK(cudaEventSynchronize(stop_event));
 
     float elapsed_ms = 0.0f;
@@ -184,8 +177,8 @@ int main(int argc, char** argv)
     constexpr int WARMUP_SAMPLES = 30;
     constexpr int BASELINE_SAMPLES = 100;
 
-    // Number of victim observations attempted while the
-    // interferer is guaranteed to still be active.
+    // We target this many observations during interference,
+    // but never continue collecting after the completion event.
     constexpr int INTERFERENCE_TARGET_SAMPLES = 100;
 
     constexpr int RECOVERY_SAMPLES = 100;
@@ -303,7 +296,6 @@ int main(int argc, char** argv)
 
     cudaEvent_t victim_start_event;
     cudaEvent_t victim_stop_event;
-
     cudaEvent_t interference_start_event;
     cudaEvent_t interference_end_event;
 
@@ -362,15 +354,9 @@ int main(int argc, char** argv)
     // --------------------------------------------------------
     // CSV
     // --------------------------------------------------------
-    // recovery_elapsed_ms is the host-observed elapsed time from
-    // the recorded interferer-end event until the host launched
-    // the corresponding recovery sample. For interference rows,
-    // time_from_interference_start_ms is measured using CUDA
-    // events in the host after synchronization points.
-    //
-    // The key scientific boundary is still the event ordering:
-    // interferer_start_event -> interferer_kernel ->
-    // interferer_end_event -> first recovery victim.
+    // recovery_index is -1 outside recovery and starts at 0 for
+    // the FIRST victim invocation after interference_end_event.
+    // The row's sample index remains globally ordered.
     // --------------------------------------------------------
 
     std::ofstream csv(output_file);
@@ -427,7 +413,7 @@ int main(int argc, char** argv)
         << interference_ms
         << " ms DRAM INTERFERENCE\n";
 
-    // Record the exact enqueue boundary for the interferer.
+    // This marker is queued immediately before the interferer.
     CUDA_CHECK(cudaEventRecord(
         interference_start_event,
         interferer_stream));
@@ -444,16 +430,14 @@ int main(int argc, char** argv)
 
     CUDA_CHECK(cudaGetLastError());
 
-    // This event is queued immediately after the interferer.
-    // Synchronizing it gives a GPU-side completion boundary.
+    // Queued immediately after the interferer kernel.
+    // Completion of this event is the recovery boundary.
     CUDA_CHECK(cudaEventRecord(
         interference_end_event,
         interferer_stream));
 
-    // We synchronize the START event before beginning the
-    // interference sample loop. This avoids labeling host work
-    // that happened before the interferer actually reached the GPU.
-    CUDA_CHECK(cudaEventSynchronize(interference_start_event));
+    CUDA_CHECK(cudaEventSynchronize(
+        interference_start_event));
 
     // --------------------------------------------------------
     // INTERFERENCE
@@ -470,19 +454,16 @@ int main(int argc, char** argv)
          i < INTERFERENCE_TARGET_SAMPLES;
          ++i)
     {
-        // Query whether the end event has completed BEFORE launching
-        // the victim. A not-ready result means the interferer is still
-        // running (or at least its completion marker is not yet reached).
+        // Do not launch another victim after the GPU-side
+        // completion marker has already passed.
         cudaError_t status =
             cudaEventQuery(interference_end_event);
 
-        if (status == cudaSuccess) {
+        if (status == cudaSuccess)
             break;
-        }
 
-        if (status != cudaErrorNotReady) {
+        if (status != cudaErrorNotReady)
             CUDA_CHECK(status);
-        }
 
         const float latency = run_victim_sample(
             victim_input,
@@ -504,33 +485,31 @@ int main(int argc, char** argv)
             << ",-1\n";
     }
 
-    // Wait for the actual GPU completion boundary.
+    // Establish the exact end boundary before recovery sample 0.
     CUDA_CHECK(cudaEventSynchronize(interference_end_event));
 
     std::cout
         << "Interference victim samples collected: "
         << interference_sample_count
-        << "\n";
-
-    std::cout
+        << "\n"
         << ">>> INTERFERENCE FINISHED\n";
 
     if (interference.empty()) {
         std::cerr
             << "ERROR: No victim samples were collected while the "
-               "interferer was active. Increase interference_ms.\n";
+               "interferer was active. Try a longer interference duration.\n";
 
         csv.close();
 
-        cudaEventDestroy(victim_start_event);
-        cudaEventDestroy(victim_stop_event);
-        cudaEventDestroy(interference_start_event);
-        cudaEventDestroy(interference_end_event);
-        cudaStreamDestroy(victim_stream);
-        cudaStreamDestroy(interferer_stream);
-        cudaFree(victim_input);
-        cudaFree(victim_output);
-        cudaFree(interferer_buffer);
+        CUDA_CHECK(cudaEventDestroy(victim_start_event));
+        CUDA_CHECK(cudaEventDestroy(victim_stop_event));
+        CUDA_CHECK(cudaEventDestroy(interference_start_event));
+        CUDA_CHECK(cudaEventDestroy(interference_end_event));
+        CUDA_CHECK(cudaStreamDestroy(victim_stream));
+        CUDA_CHECK(cudaStreamDestroy(interferer_stream));
+        CUDA_CHECK(cudaFree(victim_input));
+        CUDA_CHECK(cudaFree(victim_output));
+        CUDA_CHECK(cudaFree(interferer_buffer));
         CUDA_CHECK(cudaDeviceReset());
         return EXIT_FAILURE;
     }
@@ -545,9 +524,6 @@ int main(int argc, char** argv)
         << "--------------------------------------------\n";
 
     for (int i = 0; i < RECOVERY_SAMPLES; ++i) {
-        // The first iteration begins only after the interferer-end
-        // event has completed. Therefore recovery_index=0 is the
-        // first victim invocation after contention has ended.
         const float latency = run_victim_sample(
             victim_input,
             victim_output,
@@ -599,19 +575,20 @@ int main(int argc, char** argv)
             << "x\n";
     }
 
-    std::cout << "\nP50 / P95 / P99\n"
-              << "Baseline:     "
-              << percentile(baseline, 0.50) << " / "
-              << percentile(baseline, 0.95) << " / "
-              << percentile(baseline, 0.99) << " ms\n"
-              << "Interference: "
-              << percentile(interference, 0.50) << " / "
-              << percentile(interference, 0.95) << " / "
-              << percentile(interference, 0.99) << " ms\n"
-              << "Recovery:     "
-              << percentile(recovery, 0.50) << " / "
-              << percentile(recovery, 0.95) << " / "
-              << percentile(recovery, 0.99) << " ms\n";
+    std::cout
+        << "\nP50 / P95 / P99\n"
+        << "Baseline:     "
+        << percentile(baseline, 0.50) << " / "
+        << percentile(baseline, 0.95) << " / "
+        << percentile(baseline, 0.99) << " ms\n"
+        << "Interference: "
+        << percentile(interference, 0.50) << " / "
+        << percentile(interference, 0.95) << " / "
+        << percentile(interference, 0.99) << " ms\n"
+        << "Recovery:     "
+        << percentile(recovery, 0.50) << " / "
+        << percentile(recovery, 0.95) << " / "
+        << percentile(recovery, 0.99) << " ms\n";
 
     std::cout
         << "\nResults saved to:\n"
